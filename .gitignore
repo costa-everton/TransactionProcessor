@@ -1,0 +1,55 @@
+# Build e binários
+bin/
+obj/
+out/
+
+# Logs
+*.log
+logs/
+
+# Usuário / IDE
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Visual Studio
+.vs/
+*.dbmdl
+*.bak
+*.backup
+*.mdf
+*.ldf
+
+# Rider / JetBrains
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+
+# Teste
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# Git
+*.orig
+*.rej
+
+# Configurações locais
+secrets.json
+.env
+.env.*
+
+# Outros arquivos desnecessários
+Thumbs.db
+Desktop.ini
+
+# Documentação gerada
+docs/_build/
