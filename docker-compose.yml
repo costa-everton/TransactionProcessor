@@ -1,30 +1,28 @@
-version: "3.9"
-
 services:
-  api:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    ports:
-      - "5000:8080"
-    depends_on:
-      - db
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__DefaultConnection=Host=db;Database=pagueveloz;Username=pg;Password=pg123
-
   db:
-    image: postgres:15
-    container_name: pagueveloz-db
+    image: postgres:16
+    container_name: transaction-db
     restart: always
     environment:
       POSTGRES_USER: pg
       POSTGRES_PASSWORD: pg123
-      POSTGRES_DB: pagueveloz
+      POSTGRES_DB: transaction
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    depends_on:
+      - db
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=transaction;Username=pg;Password=pg123"
+    ports:
+      - "5000:8080"
 
 volumes:
   pgdata:

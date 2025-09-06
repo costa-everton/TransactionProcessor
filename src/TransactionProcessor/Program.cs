@@ -1,12 +1,25 @@
+using Microsoft.EntityFrameworkCore;
+using TransactionProcessor.Data;
+using TransactionProcessor.Services;
+using Microsoft.OpenApi.Models;
+
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+builder.Services.AddDbContext<TransactionDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddScoped<ITransactionService, TransactionService>();
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo { Title = "TransactionProcessor API", Version = "v1" });
+});
 
 var app = builder.Build();
 
-app.MapGet("/weatherforecast", () => "weatherforecast");
-
-
+app.UseSwagger();
+app.UseSwaggerUI();
+app.MapControllers();
 app.Run();
