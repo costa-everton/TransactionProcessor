@@ -22,6 +22,7 @@ Se algum parâmetro for diferente:
   "errorCode": "error.duplicate_reference",
   "errorMessage": "ReferenceId already used for a different transaction"
 }
+```
 
 🔑 Isso garante que ReferenceId funciona como chave idempotente, evitando operações duplicadas ou inconsistentes.
 
@@ -49,7 +50,7 @@ A API retorna erros padronizados no formato:
   "errorCode": "error.invalid_account",
   "errorMessage": "The specified account does not exist"
 }
-
+```
 # Lista de errorCode:
 
 | Código                                     | Significado                                                    |
@@ -88,7 +89,7 @@ Transações bem-sucedidas retornam:
   "reservedAfter": 0,
   "metadata": {}
 }
-
+```
 # 📌 Resumo:
 * ReferenceId = chave idempotente.
 * Transações duplicadas retornam o mesmo resultado.
@@ -102,9 +103,11 @@ Transações bem-sucedidas retornam:
 
 Você pode copiar todo o JSON abaixo e importar no Postman:
 
-<details> <summary>Clique para expandir o JSON da collection completa</summary>
-```json
-    {
+<details>
+  <summary>Clique para expandir o JSON da collection completa</summary>
+
+  ```json
+  {
       "info": {
         "name": "TransactionProcessor API - Complete",
         "_postman_id": "c1234567-89ab-4def-9012-abcdef345678",
@@ -199,9 +202,11 @@ Você pode copiar todo o JSON abaixo e importar no Postman:
         }
       ]
     }
+```
 </details>
 
-🔑 Endpoints de Conta (/accounts)
+
+# 🔑 Endpoints de Conta (/accounts)
 
 | Método | Endpoint         | Descrição              |
 | ------ | ---------------- | ---------------------- |
@@ -218,7 +223,7 @@ Exemplo de request POST
   "initialBalance": 1000,
   "creditLimit": 5000
 }
-
+```
 Exemplo de resposta
 ```json
 {
@@ -230,8 +235,9 @@ Exemplo de resposta
   "reservedBalance": 0,
   "status": "success"
 }
+```
 
-💳 Endpoints de Transações (/transactions)
+# 💳 Endpoints de Transações (/transactions)
 
 | Operação | Endpoint        | Descrição                                                            |
 | -------- | --------------- | -------------------------------------------------------------------- |
@@ -247,7 +253,7 @@ Exemplo de request (crédito)
   "ReferenceId": "c-001",
   "Metadata": { "description": "Depósito em conta" }
 }
-
+```
 Exemplo de request (transferência)
 ```json
 {
@@ -259,7 +265,7 @@ Exemplo de request (transferência)
   "ReferenceId": "t-001",
   "Metadata": { "description": "Transferência" }
 }
-
+```
 Exemplo de resposta
 ```json
 {
@@ -275,9 +281,9 @@ Exemplo de resposta
   "balanceAfter": 1500,
   "reservedAfter": 0
 }
+```
 
-
-⚠️ Códigos de Erro
+# ⚠️ Códigos de Erro
 
 | Código | Descrição                                  |
 | ------ | ------------------------------------------ |
@@ -292,3 +298,4 @@ Exemplo de erro:
   "errorCode": "error.account_already_exists",
   "errorMessage": "Account already exists"
 }
+```
