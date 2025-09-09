@@ -16,6 +16,7 @@ public record TransactionCommand(
     string Currency,
     string ReferenceId,
     string? DestinationAccountId = null,
+    string? OriginalReferenceId = null,
     IDictionary<string,string>? Metadata = null
 );
 
@@ -33,164 +34,281 @@ public class TransactionService : ITransactionService
 
     public async Task<TransactionRecord> ProcessAsync(TransactionCommand cmd, CancellationToken ct = default)
     {
-        // Idempotency: se já existe um registro com esse reference_id, retorne-o
-        var existing = await _db.Transactions.FirstOrDefaultAsync(t => t.ReferenceId == cmd.ReferenceId, ct);
-        if (existing is not null) return existing;
-
         int attempt = 0;
+
         while (true)
         {
             attempt++;
             using var tx = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
             try
             {
-                // carregar conta (se não existir, criar - depende do requisito; aqui criamos)
+                // --- Verifica se ReferenceId já existe ---
+                var existing = await _db.Transactions.AsNoTracking()
+                    .FirstOrDefaultAsync(t => t.ReferenceId == cmd.ReferenceId, ct);
+
+                if (existing != null)
+                {
+                    bool isSameData =
+                        existing.AccountIdentifier == cmd.AccountId &&
+                        existing.Amount == cmd.Amount &&
+                        existing.Currency == cmd.Currency &&
+                        existing.DestinationAccountIdentifier == cmd.DestinationAccountId &&
+                        existing.OriginalReferenceId == cmd.OriginalReferenceId &&
+                        existing.Operation.ToString().Equals(cmd.Operation, StringComparison.OrdinalIgnoreCase);
+
+                    if (isSameData)
+                    {
+                        // Idempotência válida
+                        return existing;
+                    }
+                    else
+                    {
+                        // ReferenceId duplicado com dados diferentes → erro
+                        return new TransactionRecord
+                        {
+                            ReferenceId = cmd.ReferenceId,
+                            AccountIdentifier = cmd.AccountId,
+                            DestinationAccountIdentifier = cmd.DestinationAccountId,
+                            Amount = cmd.Amount,
+                            Currency = cmd.Currency,
+                            Operation = default,
+                            Status = TransactionStatus.Failed,
+                            ErrorCode = "error.duplicate_reference",
+                            ErrorMessage = "ReferenceId already used for a different transaction",
+                            BalanceAfter = 0,
+                            ReservedAfter = 0
+                        };
+                    }
+                }
+
+                // --- Converte Operation string para enum ---
+                if (!Enum.TryParse<OperationType>(cmd.Operation, true, out var operationEnum))
+                {
+                    var trInvalidOp = new TransactionRecord
+                    {
+                        ReferenceId = cmd.ReferenceId,
+                        AccountIdentifier = cmd.AccountId,
+                        Amount = cmd.Amount,
+                        Currency = cmd.Currency,
+                        Operation = default,
+                        Status = TransactionStatus.Failed,
+                        ErrorCode = "error.unknown_operation",
+                        ErrorMessage = $"Operation '{cmd.Operation}' not recognized",
+                        BalanceAfter = 0,
+                        ReservedAfter = 0
+                    };
+                    _db.Transactions.Add(trInvalidOp);
+                    await _db.SaveChangesAsync(ct);
+                    return trInvalidOp;
+                }
+
+                // --- Busca conta origem ---
                 var account = await _db.Accounts.SingleOrDefaultAsync(a => a.AccountIdentifier == cmd.AccountId, ct);
+
                 if (account is null)
                 {
-                    account = new Account
+                    var trInvalid = new TransactionRecord
                     {
+                        ReferenceId = cmd.ReferenceId,
+                        Operation = operationEnum,
                         AccountIdentifier = cmd.AccountId,
-                        Balance = 0,
-                        ReservedBalance = 0,
-                        CreditLimit = 0,
+                        Amount = cmd.Amount,
+                        Currency = cmd.Currency,
+                        Status = TransactionStatus.Failed,
+                        ErrorCode = "error.invalid_account",
+                        ErrorMessage = "The specified account does not exist",
+                        BalanceAfter = 0,
+                        ReservedAfter = 0
                     };
-                    _db.Accounts.Add(account);
+
+                    _db.Transactions.Add(trInvalid);
                     await _db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+                    return trInvalid;
                 }
+
+                await _db.Entry(account).ReloadAsync(ct);
 
                 var tr = new TransactionRecord
                 {
                     ReferenceId = cmd.ReferenceId,
-                    Operation = cmd.Operation,
+                    Operation = operationEnum,
                     AccountIdentifier = cmd.AccountId,
                     Amount = cmd.Amount,
-                    Currency = cmd.Currency
+                    Currency = cmd.Currency,
+                    OriginalReferenceId = cmd.OriginalReferenceId,
+                    Metadata = cmd.Metadata ?? new Dictionary<string, string>()
                 };
 
-                // Process operations (simplified)
-                switch (cmd.Operation.ToLowerInvariant())
+                AccountRecord? dest = null;
+
+                // --- Lógica por tipo de operação ---
+                switch (operationEnum)
                 {
-                    case "credit":
+                    case OperationType.Credit:
                         account.Balance += cmd.Amount;
-                        tr.Status = "success";
+                        tr.Status = TransactionStatus.Success;
                         break;
 
-                    case "debit":
+                    case OperationType.Debit:
                         {
                             var available = account.Balance - account.ReservedBalance;
                             var totalAvailable = available + account.CreditLimit;
                             if (totalAvailable < cmd.Amount)
                             {
-                                tr.Status = "failed";
-                                tr.ErrorMessage = "insufficient_funds";
-                                // persistimos registro de falha
+                                tr.Status = TransactionStatus.Failed;
+                                tr.ErrorCode = "error.insufficient_funds";
+                                tr.ErrorMessage = "Insufficient funds in account";
                                 break;
                             }
                             account.Balance -= cmd.Amount;
-                            tr.Status = "success";
+                            tr.Status = TransactionStatus.Success;
                         }
                         break;
 
-                    case "reserve":
+                    case OperationType.Reserve:
                         {
                             var available = account.Balance - account.ReservedBalance;
                             if (available < cmd.Amount)
                             {
-                                tr.Status = "failed";
-                                tr.ErrorMessage = "insufficient_available_for_reserve";
+                                tr.Status = TransactionStatus.Failed;
+                                tr.ErrorCode = "error.insufficient_available_for_reserve";
+                                tr.ErrorMessage = "Not enough available balance to reserve";
                                 break;
                             }
                             account.ReservedBalance += cmd.Amount;
-                            tr.Status = "success";
+                            tr.Status = TransactionStatus.Success;
                         }
                         break;
 
-                    case "capture":
+                    case OperationType.Capture:
                         {
                             if (account.ReservedBalance < cmd.Amount)
                             {
-                                tr.Status = "failed";
-                                tr.ErrorMessage = "insufficient_reserved";
+                                tr.Status = TransactionStatus.Failed;
+                                tr.ErrorCode = "error.insufficient_reserved";
+                                tr.ErrorMessage = "Not enough reserved balance to capture";
                                 break;
                             }
                             account.ReservedBalance -= cmd.Amount;
-                            account.Balance -= cmd.Amount; // confirmar a captura (remover do total)
-                            tr.Status = "success";
+                            account.Balance -= cmd.Amount;
+                            tr.Status = TransactionStatus.Success;
                         }
                         break;
 
-                    case "reversal":
+                    case OperationType.Reversal:
                         {
-                            // Reverter uma transação existente referenciada em metadata (simplificado)
-                            // Para o exame: apenas marcar como success e creditar o valor de volta
+                            if (string.IsNullOrEmpty(cmd.OriginalReferenceId))
+                            {
+                                tr.Status = TransactionStatus.Failed;
+                                tr.ErrorCode = "error.original_reference_required";
+                                tr.ErrorMessage = "Original transaction reference is required for reversal";
+                                break;
+                            }
+
+                            var original = await _db.Transactions.AsNoTracking()
+                                .FirstOrDefaultAsync(t => t.ReferenceId == cmd.OriginalReferenceId, ct);
+
+                            if (original is null || original.Status != TransactionStatus.Success)
+                            {
+                                tr.Status = TransactionStatus.Failed;
+                                tr.ErrorCode = "error.original_transaction_not_found";
+                                tr.ErrorMessage = "Original transaction not found or not successful";
+                                break;
+                            }
+
                             account.Balance += cmd.Amount;
-                            tr.Status = "success";
+                            tr.Status = TransactionStatus.Success;
+                            tr.Metadata["reversal_of"] = cmd.OriginalReferenceId;
                         }
                         break;
 
-                    case "transfer":
+                    case OperationType.Transfer:
                         {
                             if (string.IsNullOrEmpty(cmd.DestinationAccountId))
                             {
-                                tr.Status = "failed";
-                                tr.ErrorMessage = "destination_account_required";
+                                tr.Status = TransactionStatus.Failed;
+                                tr.ErrorCode = "error.destination_account_required";
+                                tr.ErrorMessage = "Destination account must be provided for transfer";
                                 break;
                             }
-                            var dest = await _db.Accounts.SingleOrDefaultAsync(a => a.AccountIdentifier == cmd.DestinationAccountId, ct);
+
+                            dest = await _db.Accounts.SingleOrDefaultAsync(a => a.AccountIdentifier == cmd.DestinationAccountId, ct);
+
                             if (dest is null)
                             {
-                                dest = new Account { AccountIdentifier = cmd.DestinationAccountId, Balance = 0, ReservedBalance = 0, CreditLimit = 0 };
-                                _db.Accounts.Add(dest);
-                                await _db.SaveChangesAsync(ct);
+                                tr.Status = TransactionStatus.Failed;
+                                tr.ErrorCode = "error.invalid_account";
+                                tr.ErrorMessage = "Destination account does not exist";
+                                break;
                             }
+
+                            await _db.Entry(dest).ReloadAsync(ct);
 
                             var available = account.Balance - account.ReservedBalance;
                             var totalAvailable = available + account.CreditLimit;
                             if (totalAvailable < cmd.Amount)
                             {
-                                tr.Status = "failed";
-                                tr.ErrorMessage = "insufficient_funds";
+                                tr.Status = TransactionStatus.Failed;
+                                tr.ErrorCode = "error.insufficient_funds";
+                                tr.ErrorMessage = "Insufficient funds for transfer";
                                 break;
                             }
 
                             account.Balance -= cmd.Amount;
                             dest.Balance += cmd.Amount;
-                            tr.DestinationAccountIdentifier = cmd.DestinationAccountId;
-                            tr.Status = "success";
-                        }
-                        break;
 
-                    default:
-                        tr.Status = "failed";
-                        tr.ErrorMessage = "unknown_operation";
+                            tr.DestinationAccountIdentifier = cmd.DestinationAccountId;
+                            tr.Status = TransactionStatus.Success;
+                        }
                         break;
                 }
 
-                // snapshot balances
+                // --- Snapshots ---
                 tr.BalanceAfter = account.Balance;
                 tr.ReservedAfter = account.ReservedBalance;
 
+                if (dest is not null)
+                {
+                    tr.DestinationBalanceAfter = dest.Balance;
+                    tr.DestinationReservedAfter = dest.ReservedBalance;
+                }
+
                 _db.Transactions.Add(tr);
                 await _db.SaveChangesAsync(ct);
-
                 await tx.CommitAsync(ct);
 
                 return tr;
             }
-            catch (DbUpdateConcurrencyException ex)
+            catch (DbUpdateConcurrencyException)
             {
                 await tx.RollbackAsync(ct);
                 if (attempt >= MAX_RETRIES) throw;
                 _log.LogWarning("Concurrency conflict, retrying attempt {Attempt}", attempt);
-                await Task.Delay(100 * attempt, ct); // backoff simple
-                continue;
+                await Task.Delay(100 * attempt, ct);
             }
             catch (Exception ex)
             {
                 await tx.RollbackAsync(ct);
                 _log.LogError(ex, "Error processing transaction");
-                throw;
+
+                var trFailed = new TransactionRecord
+                {
+                    ReferenceId = cmd.ReferenceId,
+                    Operation = Enum.TryParse<OperationType>(cmd.Operation, true, out var op) ? op : default,
+                    AccountIdentifier = cmd.AccountId,
+                    Amount = cmd.Amount,
+                    Currency = cmd.Currency,
+                    Status = TransactionStatus.Failed,
+                    ErrorCode = "error.exception",
+                    ErrorMessage = ex.Message,
+                    BalanceAfter = 0,
+                    ReservedAfter = 0
+                };
+
+                _db.Transactions.Add(trFailed);
+                await _db.SaveChangesAsync(ct);
+                return trFailed;
             }
         }
     }

@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using TransactionProcessor.Services;
+using TransactionProcessor.Api;
+using TransactionProcessor.DTO;
 using TransactionProcessor.Models;
 
 namespace TransactionProcessor.Controllers;
@@ -14,11 +16,25 @@ public class TransactionsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Post([FromBody] TransactionCommandDto dto)
     {
-        var cmd = new TransactionCommand(dto.Operation, dto.AccountId, dto.Amount, dto.Currency, dto.ReferenceId, dto.DestinationAccountId, dto.Metadata);
+        if (dto is null)
+            return BadRequest("Transaction payload is required.");
+
+        // Monta o TransactionCommand com OriginalReferenceId incluído (para reversals)
+        var cmd = new TransactionCommand(
+            Operation: dto.Operation,
+            AccountId: dto.AccountId,
+            Amount: dto.Amount,
+            Currency: dto.Currency,
+            ReferenceId: dto.ReferenceId,
+            DestinationAccountId: dto.DestinationAccountId,
+            OriginalReferenceId: dto.OriginalReferenceId,
+            Metadata: dto.Metadata
+        );
+
+        // Chama o serviço
         var result = await _svc.ProcessAsync(cmd);
-        if (result.Status == "success") return CreatedAtAction(null, new { id = result.TransactionId }, result);
-        return BadRequest(result);
+
+        // Retorna o TransactionRecord convertido para HTTP response
+        return TransactionHttpMapper.ToHttpResponse(result);
     }
 }
-
-public record TransactionCommandDto(string Operation, string AccountId, long Amount, string Currency, string ReferenceId, string? DestinationAccountId = null, Dictionary<string,string>? Metadata = null);
