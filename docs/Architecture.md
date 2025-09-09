@@ -1,8 +1,5 @@
-
----
-
 # 📄 docs/Architecture.md
-```markdown
+
 # Arquitetura do Transaction Processor
 
 ## 🏗️ Visão Geral
@@ -51,7 +48,8 @@ O banco é gerado via **migrations do EF Core**:
 ```bash
 dotnet ef migrations add InitialCreate
 dotnet ef database update
+```
 
 Tabelas principais:
-    accounts
-    transactions
+* accounts
+* transactions
